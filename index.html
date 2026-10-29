@@ -71,7 +71,7 @@ pre{background:var(--c);padding:10px;border-radius:8px;white-space:pre-wrap;word
 <section id="st">
 <label>API key</label><input id="k" autocomplete="off"><label>API secret</label><input id="s" type="password" autocomplete="off">
 <button class="b" id="sv">Save</button>
-<label>Connection</label><select id="md"><option value="auto">Auto-detect (recommended)</option><option value="relay">Same-origin relay (Worker)</option><option value="direct">Direct to api.pionex.com</option></select><label>Relay URL (only if this page is hosted elsewhere, e.g. https://pioneer-396.pages.dev)</label><input id="ru" placeholder="leave empty = this address"><div class="row"><button class="b" id="ck">Run all checks</button><button class="b s" id="cp">Copy report</button></div><pre id="rep">Tap Run all checks.</pre>
+<label>Connection</label><select id="md"><option value="auto">Auto-detect (recommended)</option><option value="relay">Same-origin relay (Worker)</option><option value="direct">Direct to api.pionex.com</option></select><label>Relay URL (leave empty = use this page's own address; the default is the always-on Codespace relay on a non-Cloudflare IP)</label><input id="ru" placeholder="https://pionex-relay-4j9qr646wv5qcjgww-8787.app.github.dev"><div class="row"><button class="b" id="ck">Run all checks</button><button class="b s" id="cp">Copy report</button></div><pre id="rep">Tap Run all checks.</pre>
 <div class="note">Keys stay in this browser (local storage). Give the Pionex key bot reading + bot trading only. Leave the IP whitelist empty, because Cloudflare's addresses vary.</div>
 <label>Log</label><pre id="log"></pre>
 </section>
@@ -153,6 +153,18 @@ async function loadMarket(force){
   }
   $('#mkn').textContent='Loading…';lastErr='';
   var g=async function(p,x){try{return await api('GET',p,{params:x})}catch(e){lastErr=e.message;log('ERR '+p+' '+e.message);return null}};
+  // WebSocket is the DEFAULT transfer. The relay opens wss://ws.pionex.com/wsPub
+  // on its own egress (Azure, verified to reach Pionex) and serves the cached
+  // prices over plain HTTP - so the browser never opens a WebSocket, there is
+  // no CORS, and it works from any browser on any network.
+  var ws=null;
+  try{ws=await api('GET','/ws-cache')}catch(e){lastErr=e.message}
+  if(ws&&ws.ok&&ws.prices&&Object.keys(ws.prices).length){
+    MK=Object.keys(ws.prices).map(function(s){return {s:s,lv:0,p:+ws.prices[s]}});
+    localStorage.setItem('mc',JSON.stringify({t:Date.now(),mk:MK}));
+    $('#mkn').textContent=MK.length+' perpetuals, live via WebSocket (relay opened wss://ws.pionex.com/wsPub). Tap a row to build a grid.';
+    rm();return;
+  }
   var sy=await g('/api/v1/common/symbols',{type:'PERP'});
   if(!sy){if(!MK.length)$('#mkn').textContent='No data: '+lastErr+'. Open Settings > Run all checks.';return}
   var rt=await g('/api/v1/common/riskTable'),tk=await g('/api/v1/market/tickers',{type:'PERP'}),oi=await g('/api/v1/market/openInterests'),ix=await g('/api/v1/market/indexes');
@@ -169,12 +181,10 @@ async function loadMarket(force){
   rm();
   if(MODE==='ws')wsLive();
 }
-// wsLive is COMMENTED OUT: ws.pionex.com is blocked from this network, and
-// retrying it every 5s just spams the log. The local relay streams market
-// data instead. Keep the function defined so MODE==='ws' still degrades
-// cleanly to REST polling.
+// wsLive is replaced by the relay's /ws-cache endpoint (the relay opens the
+// WebSocket on its own egress). Kept for compatibility.
 function wsLive(){
-  log('WebSocket streaming disabled: ws.pionex.com is blocked from this network. Use the local relay (pionex_local.py) for live prices.');
+  log('Live prices come from the relay WebSocket cache (/ws-cache). No browser WebSocket needed.');
 }
 function rm(){
   var f=$('#flt').value.toUpperCase(),a=MK.filter(function(x){return x.s.indexOf(f)>-1});
@@ -229,14 +239,18 @@ $('#k').value=LS('k');$('#s').value=LS('s');
 $('#sv').onclick=function(){localStorage.setItem('k',$('#k').value.trim());localStorage.setItem('s',$('#s').value.trim());log('Saved keys')};
 async function detect(){
   var D='https://api.pionex.com',rb=(LS('relay')||'').replace(/\/+$/,'');
+  // Default relay: the always-on Codespace relay on a non-Cloudflare IP
+  // (Azure egress, verified to reach Pionex at HTTP 200). Override in Settings.
+  if(!rb)rb='https://pionex-relay-4j9qr646wv5qcjgww-8787.app.github.dev';
   if(MODE==='relay'){BASE=rb;return}
   if(MODE==='direct'){BASE=D;return}
   if(MODE==='ws'){BASE='wss://ws.pionex.com/wsPub';wsLive();return}
   var s=sessionStorage.getItem('base');if(s!==null){BASE=s==='D'?D:(s==='R'?rb:s==='W'?'wss://ws.pionex.com/wsPub':rb);return}
-  // Auto-detect, in preference order. The current page's own origin is a relay
-  // candidate too - that is how pionier.pages.dev works (Worker at same address).
-  var self=location.origin.replace(/\/+$/,'');
-  var cands=[self,rb].filter(Boolean);
+  // Auto-detect, in preference order. The configured/default relay is tried
+  // FIRST: it runs on a non-Cloudflare IP (Azure egress, verified to reach
+  // Pionex at HTTP 200). The page's own Cloudflare origin is deliberately NOT
+  // a candidate - it is the shared IP that Pionex rate-limits (429).
+  var cands=[rb].filter(Boolean);
   // 1) Same-origin relay (this page's own address, e.g. the Worker).
   //    WebSocket is intentionally NOT probed here: ws.pionex.com is blocked
   //    from this network (verified: connection failed repeatedly), and a
@@ -261,31 +275,26 @@ function hint(m){
 }
 async function checks(){
   rpt=[];sessionStorage.removeItem('base');await detect();
-  rp('INFO','page '+location.origin+' | transport: '+(BASE===null?'NONE':BASE==='https://api.pionex.com'?'DIRECT from your phone (own IP)':BASE==='wss://ws.pionex.com/wsPub'?'WEBSOCKET wss://ws.pionex.com/wsPub (own IP, no CORS, no rate limit)':'relay '+BASE));
-  if(BASE===null){rp('FAIL','No working route from this address. Auto-detect tried: WebSocket to ws.pionex.com, same-origin relay ('+location.origin+' - the Worker is there on the Cloudflare link), and direct. Pionex blocks direct browser calls (CORS) and rate-limits shared Cloudflare IPs. Fix: open the Cloudflare link in Chrome on your phone, run the local relay (pionex_local.py in Termux), or set Connection = WebSocket in Settings.');return}
+rp('INFO','page '+location.origin+' | transport: '+(BASE===null?'NONE':BASE==='https://api.pionex.com'?'DIRECT from your phone (own IP)':BASE==='wss://ws.pionex.com/wsPub'?'WEBSOCKET wss://ws.pionex.com/wsPub (own IP, no CORS, no rate limit)':'relay '+BASE+' (WebSocket is the default transfer: the relay opens wss://ws.pionex.com/wsPub on its own egress, browser polls over HTTP)'));
+  if(BASE===null){rp('FAIL','No working route. Auto-detect tried: same-origin relay, the default Codespace relay (Azure egress, verified to reach Pionex at 200), and direct. Pionex blocks direct browser calls (CORS) and rate-limits shared Cloudflare IPs. Fix: set Relay URL in Settings to a working relay, or run the local relay (pionex_local.py in Termux).');return}
   if(Date.now()<cool){rp('WAIT',cdMsg()+'. Do nothing, then run again.');return}
   async function step(name,fn){try{var m=await fn();rp('PASS',name+(m?': '+m:''));return true}catch(e){rp('FAIL',name+': '+e.message+hint(e.message));return !/429|COOLDOWN/.test(e.message)}}
   var ok=true;
-// WebSocket to Pionex is COMMENTED OUT: ws.pionex.com is blocked from this
-// network (verified - connection failed repeatedly from the phone too).
-// if(BASE==='wss://ws.pionex.com/wsPub'){ok=await step('WebSocket to Pionex (no CORS, no HTTP rate limit)',async function(){
-//     return new Promise(function(res,rej){
-//       var t=setTimeout(function(){rej(new Error('timeout 8s - ws.pionex.com unreachable from this network'))},8000);
-//       var ws;
-//       try{ws=new WebSocket('wss://ws.pionex.com/wsPub')}catch(e){clearTimeout(t);rej(new Error('WebSocket blocked by browser: '+e.message))}
-//       ws.onopen=function(){ws.send(JSON.stringify({op:'SUBSCRIBE',topic:'INDEX',symbol:'BTC_USDT_PERP'}))};
-//       ws.onmessage=function(e){clearTimeout(t);try{var d=JSON.parse(e.data);if(d.data&&d.data[0]&&d.data[0].indexPrice){res('index price '+d.data[0].indexPrice+' via own IP');ws.close()}else if(d.topic){res('connected, INDEX subscribed');ws.close()}}catch(x){res('connected (raw msg received)');ws.close()}};
-//       ws.onerror=function(){clearTimeout(t);rej(new Error('connection failed'))};
-//       ws.onclose=function(){clearTimeout(t)};
-//     });
-//   });rp('INFO','WebSocket mode: market prices stream from your own IP. Private actions (bots, balances) still need REST - use the REST relay mode for those.');if(!ok)return}
+  // WebSocket is the DEFAULT transfer: the relay opens wss://ws.pionex.com/wsPub
+  // on its own egress and serves cached prices over HTTP, so the browser never
+  // opens a WebSocket and there is no CORS. Verified working from Azure egress.
+  if(BASE!=='https://api.pionex.com')ok=await step('WebSocket to Pionex (default transfer, relay opens the socket)',async function(){
+    var j=await (await fetch(BASE+'/ws-cache')).json();
+    if(!j.ok)throw new Error('relay WebSocket not connected yet');
+    return 'live prices for '+Object.keys(j.prices||{}).length+' symbols, age '+(j.age_ms==null?'n/a':j.age_ms+'ms');
+  });
   if(BASE!=='https://api.pionex.com')ok=await step('relay to Pionex',async function(){var j=await (await fetch(BASE+'/diag')).json();if(!j.ok)throw new Error('HTTP '+j.status+' '+(j.error||j.head));return 'HTTP '+j.status+' '+j.ms+'ms, worker IP '+j.ip})
   if(ok)ok=await step('public futures symbols',async function(){return arr(await api('GET','/api/v1/common/symbols',{params:{type:'PERP'}})).length+' perps'});
   if(ok)ok=await step('riskTable',async function(){return 'highest leverage seen '+maxLev(await api('GET','/api/v1/common/riskTable'))+'x'});
   rp('INFO','clock offset vs Pionex: '+off+' ms'+(Math.abs(off)>15000?' (LARGE, fix phone time)':''));
   if(ok&&LS('k')&&LS('s'))ok=await step('API key',async function(){await api('GET','/api/v1/bot/orders',{params:{status:'running'},priv:true});return 'accepted'});
   else if(ok)rp('INFO','no key saved yet');
-  if(!ok&&BASE!=='https://api.pionex.com')rp('HINT','If Cloudflare keeps answering 429, its IP is shared. Run the local relay (pionex_local.py in Termux) so calls come from your own IP - that is the only route that works from this network.');
+  if(!ok&&BASE!=='https://api.pionex.com')rp('HINT','If Cloudflare keeps answering 429, its IP is shared. The default relay runs on Azure egress (verified to reach Pionex) - that is the route that works. Override Relay URL in Settings if needed.');
   rp('DONE','copy the report if anything failed');
 }
 $('#ck').onclick=checks;

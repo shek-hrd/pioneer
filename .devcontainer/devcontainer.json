@@ -1,0 +1,15 @@
+{
+  "name": "pionex-relay",
+  "image": "mcr.microsoft.com/devcontainers/python:3.14",
+  "postCreateCommand": "python3 -m py_compile pionex_local.py && echo COMPILE_OK",
+  "postStartCommand": "cd /workspaces/pioneer && nohup python3 pionex_local.py 8787 > /tmp/relay.log 2>&1 & echo relay started",
+  "forwardPorts": [8787],
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {}
+  }
+}
