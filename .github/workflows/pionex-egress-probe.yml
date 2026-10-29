@@ -1,0 +1,23 @@
+name: pionex-egress-probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe Pionex from GitHub Actions egress
+        run: |
+          echo "=== egress IP ==="
+          curl -s https://api.ipify.org
+          echo ""
+          echo "=== symbols (GET) ==="
+          curl -s -o /dev/null -w "symbols:%{http_code}\n" "https://api.pionex.com/api/v1/common/symbols?type=PERP"
+          echo "=== bookTickers (GET) ==="
+          curl -s -o /dev/null -w "bookTickers:%{http_code}\n" "https://api.pionex.com/api/v1/market/bookTickers?symbol=BTC_USDT_PERP"
+          echo "=== klines (GET) ==="
+          curl -s -o /dev/null -w "klines:%{http_code}\n" "https://api.pionex.com/api/v1/market/klines?symbol=BTC_USDT_PERP&interval=1m&limit=1"
+          echo "=== symbols body (first 200 chars) ==="
+          curl -s "https://api.pionex.com/api/v1/common/symbols?type=PERP" | head -c 200
+          echo ""
+          echo "=== headers on symbols ==="
+          curl -s -i "https://api.pionex.com/api/v1/common/symbols?type=PERP" | head -15

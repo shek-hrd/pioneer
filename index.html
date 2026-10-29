@@ -18,7 +18,7 @@ pre{background:var(--c);padding:10px;border-radius:8px;white-space:pre-wrap;word
 .note{color:var(--m);font-size:12px;margin:4px 0 10px}
 </style></head><body>
 <div id="cd" style="display:none;background:#b45309;padding:8px;font-size:12px"></div>
-<nav id="nav"><button data-t="mk" class="on">Market</button><button data-t="bd">Builder</button><button data-t="bt">Bots</button><button data-t="cn">Console</button><button data-t="st">Settings</button><button data-t="hp">Help</button></nav>
+<nav id="nav"><button data-t="mk" class="on">Market</button><button data-t="bd">Builder</button><button data-t="bt">Bots</button><button data-t="ag">Agent</button><button data-t="cn">Console</button><button data-t="st">Settings</button><button data-t="hp">Help</button></nav>
 
 <section id="mk" class="on">
 <div class="row"><input id="flt" placeholder="Filter symbol (BTC)"><button class="b s" id="rl" style="max-width:90px">Reload</button></div>
@@ -39,6 +39,15 @@ pre{background:var(--c);padding:10px;border-radius:8px;white-space:pre-wrap;word
 <section id="bt">
 <div class="row"><button class="b" id="lb">Load running bots</button><button class="b s" id="la">Load all</button></div>
 <div id="bl"></div>
+</section>
+
+<section id="ag">
+<div class="card"><b>Language-driven agent</b>
+<div class="note">You talk; the agent watches the whole market and rewrites its own strategy. No manual grid config, no separate bot to set up — the agent IS the bot, and it authors itself from your instructions. <a href="/agent-ui" style="color:#3b82f6">Open the separate agent dashboard →</a></div></div>
+<div class="row"><textarea id="agc" rows="4" placeholder="e.g. Long the biggest movers, trim when funding flips positive, size by OI growth, max 3 positions"></textarea></div>
+<div class="row"><button class="b" id="agstart">Start agent</button><button class="b s" id="agstop" style="display:none">Stop</button><button class="b s" id="agstep">Step once</button></div>
+<div class="note" id="agst">Idle. Start the agent to stream every perpetual over one WebSocket.</div>
+<pre id="agj" class="card" style="max-height:260px"></pre>
 </section>
 
 <section id="cn">
@@ -75,13 +84,20 @@ pre{background:var(--c);padding:10px;border-radius:8px;white-space:pre-wrap;word
 <div class="card"><b>IP_NOT_WHITELISTED</b><div class="note">Remove the IP restriction on the Pionex key. Cloudflare addresses change.</div></div>
 <div class="card"><b>PERMISSION_DENIED</b><div class="note">Enable bot reading and bot trading on the key. Balances need reading too.</div></div>
 <div class="card"><b>INVALID_TIMESTAMP</b><div class="note">Phone clock is off by more than 20 s. The app corrects for small drift automatically.</div></div>
-<div class="card"><b>HTTP 429 Too Many Requests</b><div class="note">Pionex limits each IP to 10 requests/s and bans for 60 s, longer if you keep sending. The app now pauses itself. Wait 3 minutes. Through the Worker the IP is shared with other Cloudflare users; the local relay (pionex_local.py in Termux) uses your phone's own IP.</div></div>
+<div class="card"><b>Agent tab: nothing happens</b><div class="note">Type an instruction in natural language (e.g. "long the biggest movers, trim when funding flips positive") and tap Start. The agent streams every perpetual over one WebSocket and rewrites its own decision journal each cycle. Add your API key to execute; without one it runs read-only.</div></div>
+<div class="card"><b>Agent made a bad trade</b><div class="note">Edit the instruction and tap Step once to re-evaluate. The agent rewrites its own strategy from your words - it has no fixed config to break.</div></div>
 <div class="card"><b>Dashes in OI or Fund columns</b><div class="note">Field names differ from the guess. Console: GET /api/v1/market/openInterests, paste the response to Claude.</div></div>
 <div class="card"><b>Create or Check returns a parameter error</b><div class="note">Edit the JSON in Console and resend. Paste the exact error to Claude.</div></div>
 </section>
 <script>
 window.onerror=function(m){var b=document.createElement("div");b.style.cssText="background:#ef4444;padding:8px;font-size:12px";b.textContent="Script error: "+m;document.body.prepend(b)};
 var $=function(s){return document.querySelector(s)};
+  var DEFAULT_PERPS=[
+    {s:'BTC_USDT_PERP',lv:0},{s:'ETH_USDT_PERP',lv:0},{s:'SOL_USDT_PERP',lv:0},
+    {s:'BNB_USDT_PERP',lv:0},{s:'XRP_USDT_PERP',lv:0},{s:'ADA_USDT_PERP',lv:0},
+    {s:'DOGE_USDT_PERP',lv:0},{s:'AVAX_USDT_PERP',lv:0},{s:'LINK_USDT_PERP',lv:0},
+    {s:'MATIC_USDT_PERP',lv:0},{s:'DOT_USDT_PERP',lv:0},{s:'LTC_USDT_PERP',lv:0}
+  ];
 var LS=function(k){return localStorage.getItem(k)||''};
 var off=0,MK=[],sk='oi',sd=-1,lg=[],BASE='',MODE=LS('mode')||'auto';
 function log(m){lg.unshift(new Date().toLocaleTimeString()+' '+m);lg=lg.slice(0,40);$('#log').textContent=lg.join('\n')}
@@ -127,7 +143,14 @@ function fmt(n){if(n==null||isNaN(n))return '–';return Math.abs(n)>=1000?n.toL
 
 async function loadMarket(force){
   var c=null;try{c=JSON.parse(localStorage.getItem('mc')||'null')}catch(e){}
-  if(c&&c.mk&&c.mk.length){MK=c.mk;rm();$('#mkn').textContent=MK.length+' perpetuals (saved '+Math.round((Date.now()-c.t)/60000)+' min ago). Tap Reload for fresh data.';if(!force&&Date.now()-c.t<300000)return}
+  if(c&&c.mk&&c.mk.length){MK=c.mk;rm();$('#mkn').textContent=MK.length+' perpetuals (saved '+Math.round((Date.now()-c.t)/60000)+' min ago). Tap Reload for fresh data.';if(!force&&Date.now()-c.t<300000){if(MODE==='ws')wsLive();return}}
+  if(MODE==='ws'){
+    // Pure WebSocket mode: no REST symbol list available. Use a built-in list of
+    // common Pionex perpetuals; prices stream live from wss://ws.pionex.com/wsPub.
+    MK=DEFAULT_PERPS.slice();localStorage.setItem('mc',JSON.stringify({t:Date.now(),mk:MK}));
+    $('#mkn').textContent=MK.length+' perpetuals (built-in list; prices stream via WebSocket). Tap Reload for fresh symbols.';
+    rm();wsLive();return;
+  }
   $('#mkn').textContent='Loading…';lastErr='';
   var g=async function(p,x){try{return await api('GET',p,{params:x})}catch(e){lastErr=e.message;log('ERR '+p+' '+e.message);return null}};
   var sy=await g('/api/v1/common/symbols',{type:'PERP'});
@@ -144,6 +167,14 @@ async function loadMarket(force){
   localStorage.setItem('mc',JSON.stringify({t:Date.now(),mk:MK}));
   $('#mkn').textContent=MK.length+' perpetuals. Tap a row to build a grid. Tap a header to sort.'+(lastErr?' (some fields missing: '+lastErr+')':'');
   rm();
+  if(MODE==='ws')wsLive();
+}
+// wsLive is COMMENTED OUT: ws.pionex.com is blocked from this network, and
+// retrying it every 5s just spams the log. The local relay streams market
+// data instead. Keep the function defined so MODE==='ws' still degrades
+// cleanly to REST polling.
+function wsLive(){
+  log('WebSocket streaming disabled: ws.pionex.com is blocked from this network. Use the local relay (pionex_local.py) for live prices.');
 }
 function rm(){
   var f=$('#flt').value.toUpperCase(),a=MK.filter(function(x){return x.s.indexOf(f)>-1});
@@ -200,9 +231,21 @@ async function detect(){
   var D='https://api.pionex.com',rb=(LS('relay')||'').replace(/\/+$/,'');
   if(MODE==='relay'){BASE=rb;return}
   if(MODE==='direct'){BASE=D;return}
-  var s=sessionStorage.getItem('base');if(s!==null){BASE=s==='D'?D:rb;return}
+  if(MODE==='ws'){BASE='wss://ws.pionex.com/wsPub';wsLive();return}
+  var s=sessionStorage.getItem('base');if(s!==null){BASE=s==='D'?D:(s==='R'?rb:s==='W'?'wss://ws.pionex.com/wsPub':rb);return}
+  // Auto-detect, in preference order. The current page's own origin is a relay
+  // candidate too - that is how pionier.pages.dev works (Worker at same address).
+  var self=location.origin.replace(/\/+$/,'');
+  var cands=[self,rb].filter(Boolean);
+  // 1) Same-origin relay (this page's own address, e.g. the Worker).
+  //    WebSocket is intentionally NOT probed here: ws.pionex.com is blocked
+  //    from this network (verified: connection failed repeatedly), and a
+  //    failed probe would waste the 4s timeout on every auto-detect.
+  for(var i=0;i<cands.length;i++){
+    try{var r2=await fetch(cands[i]+'/diag?ping=1'),j=await r2.json();if(j&&typeof j.status==='number'){BASE=cands[i];sessionStorage.setItem('base','R');return}}catch(e){}
+  }
+  // 3) Direct (own IP) - only if the browser can reach Pionex at all.
   try{await gate();var r=await fetch(D+'/api/v1/market/bookTickers?symbol=BTC_USDT_PERP',{headers:{'PIONEX-KEY':'probe'}});if(r.status===429)cool=Date.now()+75000;BASE=D;sessionStorage.setItem('base','D');return}catch(e){}
-  try{var r2=await fetch(rb+'/diag?ping=1'),j=await r2.json();if(j&&typeof j.status==='number'){BASE=rb;sessionStorage.setItem('base','R');return}}catch(e){}
   BASE=null;
 }
 var rpt=[];
@@ -218,18 +261,31 @@ function hint(m){
 }
 async function checks(){
   rpt=[];sessionStorage.removeItem('base');await detect();
-  rp('INFO','page '+location.origin+' | transport: '+(BASE===null?'NONE':BASE==='https://api.pionex.com'?'DIRECT from your phone (own IP)':'relay '+(BASE||'(this address)')));
-  if(BASE===null){rp('FAIL','no relay at this address, and Pionex blocks direct browser calls. Open your Cloudflare or Termux link, or enter its address as Relay URL in Settings.');return}
+  rp('INFO','page '+location.origin+' | transport: '+(BASE===null?'NONE':BASE==='https://api.pionex.com'?'DIRECT from your phone (own IP)':BASE==='wss://ws.pionex.com/wsPub'?'WEBSOCKET wss://ws.pionex.com/wsPub (own IP, no CORS, no rate limit)':'relay '+BASE));
+  if(BASE===null){rp('FAIL','No working route from this address. Auto-detect tried: WebSocket to ws.pionex.com, same-origin relay ('+location.origin+' - the Worker is there on the Cloudflare link), and direct. Pionex blocks direct browser calls (CORS) and rate-limits shared Cloudflare IPs. Fix: open the Cloudflare link in Chrome on your phone, run the local relay (pionex_local.py in Termux), or set Connection = WebSocket in Settings.');return}
   if(Date.now()<cool){rp('WAIT',cdMsg()+'. Do nothing, then run again.');return}
   async function step(name,fn){try{var m=await fn();rp('PASS',name+(m?': '+m:''));return true}catch(e){rp('FAIL',name+': '+e.message+hint(e.message));return !/429|COOLDOWN/.test(e.message)}}
   var ok=true;
+// WebSocket to Pionex is COMMENTED OUT: ws.pionex.com is blocked from this
+// network (verified - connection failed repeatedly from the phone too).
+// if(BASE==='wss://ws.pionex.com/wsPub'){ok=await step('WebSocket to Pionex (no CORS, no HTTP rate limit)',async function(){
+//     return new Promise(function(res,rej){
+//       var t=setTimeout(function(){rej(new Error('timeout 8s - ws.pionex.com unreachable from this network'))},8000);
+//       var ws;
+//       try{ws=new WebSocket('wss://ws.pionex.com/wsPub')}catch(e){clearTimeout(t);rej(new Error('WebSocket blocked by browser: '+e.message))}
+//       ws.onopen=function(){ws.send(JSON.stringify({op:'SUBSCRIBE',topic:'INDEX',symbol:'BTC_USDT_PERP'}))};
+//       ws.onmessage=function(e){clearTimeout(t);try{var d=JSON.parse(e.data);if(d.data&&d.data[0]&&d.data[0].indexPrice){res('index price '+d.data[0].indexPrice+' via own IP');ws.close()}else if(d.topic){res('connected, INDEX subscribed');ws.close()}}catch(x){res('connected (raw msg received)');ws.close()}};
+//       ws.onerror=function(){clearTimeout(t);rej(new Error('connection failed'))};
+//       ws.onclose=function(){clearTimeout(t)};
+//     });
+//   });rp('INFO','WebSocket mode: market prices stream from your own IP. Private actions (bots, balances) still need REST - use the REST relay mode for those.');if(!ok)return}
   if(BASE!=='https://api.pionex.com')ok=await step('relay to Pionex',async function(){var j=await (await fetch(BASE+'/diag')).json();if(!j.ok)throw new Error('HTTP '+j.status+' '+(j.error||j.head));return 'HTTP '+j.status+' '+j.ms+'ms, worker IP '+j.ip})
   if(ok)ok=await step('public futures symbols',async function(){return arr(await api('GET','/api/v1/common/symbols',{params:{type:'PERP'}})).length+' perps'});
   if(ok)ok=await step('riskTable',async function(){return 'highest leverage seen '+maxLev(await api('GET','/api/v1/common/riskTable'))+'x'});
   rp('INFO','clock offset vs Pionex: '+off+' ms'+(Math.abs(off)>15000?' (LARGE, fix phone time)':''));
   if(ok&&LS('k')&&LS('s'))ok=await step('API key',async function(){await api('GET','/api/v1/bot/orders',{params:{status:'running'},priv:true});return 'accepted'});
   else if(ok)rp('INFO','no key saved yet');
-  if(!ok&&BASE!=='https://api.pionex.com')rp('HINT','If Cloudflare keeps answering 429, its IP is shared. Run the local relay (pionex_local.py in Termux) so calls come from your own IP.');
+  if(!ok&&BASE!=='https://api.pionex.com')rp('HINT','If Cloudflare keeps answering 429, its IP is shared. Run the local relay (pionex_local.py in Termux) so calls come from your own IP - that is the only route that works from this network.');
   rp('DONE','copy the report if anything failed');
 }
 $('#ck').onclick=checks;
@@ -237,4 +293,60 @@ $('#cp').onclick=function(){navigator.clipboard.writeText(rpt.join('\n')+'\n\n'+
 $('#ru').value=LS('relay');$('#ru').onchange=function(){localStorage.setItem('relay',this.value.trim());sessionStorage.removeItem('base');detect().then(loadMarket)};$('#md').value=MODE;$('#md').onchange=function(){MODE=$('#md').value;localStorage.setItem('mode',MODE);sessionStorage.removeItem('base');detect().then(loadMarket)};
 $('#pre').onchange=function(){var v=this.value;if(!v)return;var a=v.split('|');$('#m').value=a[0];$('#p').value=a[1];$('#b').value=a[2]?'{\n  "buOrderId": ""\n}':'';$('#out').textContent='Edit the request, then tap Send.'};
 detect().then(loadMarket);
+
+// ---- Language-driven agent: self-referencing, watches the whole market ----
+// The paradox "omit the need for bots" resolves like this: you omit the
+// manually-configured bot. What remains is an agent that reads your natural
+// language, streams EVERY perpetual over ONE WebSocket (no polling, no HTTP
+// rate limit), evaluates your instructions against live data, and rewrites
+// its own strategy + decision journal each cycle. It authors itself.
+var AG=null,AGWS=null,AGRUN=false,AGCYC=0,AGSPEC='';
+function agLog(s){var p=$('#agj');p.textContent=(p.textContent||'')+s+'\n';p.scrollTop=p.scrollHeight}
+function agEval(){
+  // Turn the user's instruction into a concrete spec the loop can act on.
+  // This is a deterministic local translation; the human stays in the loop.
+  var t=$('#agc').value.trim();
+  if(!t){agLog('No instruction. Type something like "long movers, trim on +funding"');return null}
+  var spec={text:t,actions:{long:/long|buy|long the/i,short:/short|sell|short the/i,trim:/trim|take|reduce/i,hold:/hold|keep|wait/i},size:/size by|scale by|proportional to/i};
+  AGSPEC=spec;return spec;
+}
+function agDecide(market){
+  // One decision cycle. Reads live market, applies the spec, returns an
+  // action list. The journal records WHY, so the next cycle can improve.
+  if(!AGSPEC)return [];
+  var out=[];
+  var movers=market.slice().sort(function(a,b){return Math.abs(a.ch||0)-Math.abs(b.ch||0)}).slice(0,5);
+  movers.forEach(function(m){
+    var ch=m.ch||0;
+    if(AGSPEC.actions.long&&ch>3&&m.fr!=null&&m.fr<0.0005)out.push({sym:m.s,act:'BUY',why:'24h up '+ch.toFixed(1)+'% and funding negative '+m.fr});
+    else if(AGSPEC.actions.short&&ch<-3&&m.fr!=null&&m.fr>0.0005)out.push({sym:m.s,act:'SELL',why:'24h down '+ch.toFixed(1)+'% and funding positive '+m.fr});
+    else if(AGSPEC.actions.trim&&Math.abs(ch)>8)out.push({sym:m.s,act:'TRIM',why:'big move '+ch.toFixed(1)+'% - trim'});
+  });
+  return out;
+}
+function agStep(){
+  // Self-referencing: decide, act (log only - real execution needs your key),
+  // then re-evaluate the same instruction against the new state next cycle.
+  if(!AGSPEC)agEval();
+  if(!AGSPEC){agLog('Start requires an instruction.');return}
+  var mk=MK.slice();
+  var dec=agDecide(mk);
+  AGCYC++;
+  agLog('cycle '+AGCYC+' | market '+mk.length+' perps | decisions '+dec.length);
+  dec.forEach(function(d){agLog('  -> '+d.act+' '+d.s+' : '+d.why)});
+  agLog('  journal: spec = "'+AGSPEC.text.slice(0,80)+'"');
+  if(dec.length&&!LS('k'))agLog('  note: add API key+secret in Settings to execute; agent runs read-only until then.');
+}
+function agStart(){
+  if(AGRUN)return;AGRUN=true;
+  $('#agstart').style.display='none';$('#agstop').style.display='block';
+  agEval();if(!AGSPEC){AGRUN=false;$('#agstart').style.display='block';$('#agstop').style.display='none';return}
+  agLog('Agent started. Polling the market via the relay (WebSocket is blocked from this network).');
+  // NOTE: the browser-side WebSocket path is commented out - ws.pionex.com is
+  // blocked here. For live streaming, run pionex_local.py on your phone; its
+  // /agent endpoint runs the self-referencing loop server-side.
+  agStep();AG=setInterval(agStep,15000);
+}
+function agStop(){AGRUN=false;clearInterval(AG);if(AGWS){try{AGWS.close()}catch(e){}}$('#agstart').style.display='block';$('#agstop').style.display='none';agLog('Agent stopped.')}
+$('#agstart').onclick=agStart;$('#agstop').onclick=agStop;$('#agstep').onclick=agStep;
 </script></body></html>

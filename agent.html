@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent</title>
+<style>
+body{font-family:system-ui;margin:0;background:#0b0d12;color:#e6e8ee;padding:16px;max-width:820px;margin:auto}
+h1{margin:0 0 4px;font-size:20px}
+.sub{color:#8b93a7;font-size:13px;margin-bottom:16px}
+.card{background:#14171f;border:1px solid #232838;border-radius:10px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:12px;color:#8b93a7;margin:8px 0 4px}
+textarea,input{width:100%;box-sizing:border-box;background:#0b0d12;border:1px solid #2c3140;border-radius:8px;color:#e6e8ee;padding:10px;font-size:14px;font-family:inherit}
+textarea{resize:vertical;min-height:70px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>*{flex:1;min-width:120px}
+button{background:#3b82f6;color:#fff;border:0;border-radius:8px;padding:10px 14px;font-size:14px;cursor:pointer;font-weight:600}
+button.sec{background:#1f2430;color:#e6e8ee;border:1px solid #2c3140}
+button.d{background:#7f1d1d}
+button:disabled{opacity:.5;cursor:not-allowed}
+pre{background:#0b0d12;border:1px solid #232838;border-radius:8px;padding:12px;min-height:120px;overflow:auto;font-size:12px;line-height:1.5;margin:0;white-space:pre-wrap;word-break:break-all}
+.ok{color:#22c55e}.err{color:#ef4444}.info{color:#3b82f6}
+small{color:#8b93a7}
+</style>
+</head>
+<body>
+<h1>Pionex Agent</h1>
+<div class="sub">Language-driven. Self-referencing. Runs as a server on your phone; this page is the interface only.</div>
+
+<div class="card">
+<label>Instruction (natural language)</label>
+<textarea id="inst" placeholder="e.g. Long the biggest movers, trim when funding flips positive, size by OI growth, max 3 positions"></textarea>
+<div class="row" style="margin-top:10px">
+<div><label>Relay base URL</label><input id="url" value="http://127.0.0.1:8787"></div>
+<div><label>Auto-trade</label><input id="auto" type="checkbox" style="width:auto;margin-top:18px"></div>
+</div>
+<div class="row">
+<div><label>API key</label><input id="key" type="password" placeholder="Pionex key (bot reading + trading)"></div>
+<div><label>API secret</label><input id="sec" type="password" placeholder="Pionex secret"></div>
+</div>
+<div class="row">
+<div><label>Investment (USDT)</label><input id="inv" value="100"></div>
+<div><label>Grids</label><input id="gn" value="20"></div>
+</div>
+<div class="row">
+<button id="cfg">Save config</button>
+<button class="sec" id="start">Start</button>
+<button class="sec d" id="stop" disabled>Stop</button>
+<button class="sec" id="step">Step once</button>
+</div>
+</div>
+
+<div class="card">
+<div class="row">
+<div><label>Status</label><pre id="status">idle</pre></div>
+<div><label>Decisions (latest cycle)</label><pre id="dec">—</pre></div>
+</div>
+<div><label>Decision journal</label><pre id="log">—</pre></div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+let running=false;
+async function j(path,opts){const r=await fetch($(url).value+path,opts);return r.json();}
+function fmt(x){return JSON.stringify(x,null,1)}
+async function cfg(){
+  try{const r=await j('/agent/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction:$(inst).value,auto_trade:$(auto).checked})});
+  $('status').textContent='config saved: '+fmt(r.spec||r);
+  await refresh();}catch(e){$('status').textContent='ERR '+e.message;}
+}
+async function start(){try{const r=await j('/agent/start');running=r.running;$(start).disabled=running;$(stop).disabled=!running;$('status').textContent=fmt(r);poll();}catch(e){$('status').textContent='ERR '+e.message;}}
+async function stop(){try{const r=await j('/agent/stop');running=false;$(start).disabled=false;$(stop).disabled=true;$('status').textContent=fmt(r);}catch(e){$('status').textContent='ERR '+e.message;}}
+async function step(){try{const r=await j('/agent/step');$('dec').textContent=fmt(r.decisions||r);$('log').textContent=(fmt(r)+'\n'+$('log').textContent).slice(0,4000);}catch(e){$('dec').textContent='ERR '+e.message;}}
+async function refresh(){try{const r=await j('/agent/status');running=r.running;$(start).disabled=running;$(stop).disabled=!running;$('status').textContent=fmt({running:r.running,cycles:r.cycles,spec:r.spec});$('log').textContent=fmt(r.journal||[]).slice(0,4000);}catch(e){$('status').textContent='ERR '+e.message;}}
+let p=null;
+function poll(){clearInterval(p);p=setInterval(refresh,4000);}
+$(cfg).onclick=cfg;$(start).onclick=start;$(stop).onclick=stop;$(step).onclick=step;
+refresh();
+</script>
+</body>
+</html>
